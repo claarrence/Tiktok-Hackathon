@@ -26,6 +26,7 @@ SIZE_RE = re.compile(r"\b(" + "|".join(SIZE_WORDS) + r")\b", re.I)
 STYLE_RE = re.compile(r"\b(" + "|".join(STYLE_WORDS) + r")\b", re.I)
 USE_CASE_RE = re.compile(r"\b(" + "|".join(USE_CASE_WORDS) + r")\b", re.I)
 BUDGET_RE = re.compile(r"(?:\$|budget|under|less than)\s*\$?\d", re.I)
+BUDGET_NUMBER_RE = re.compile(r"\$?\s*(\d+(?:\.\d{1,2})?)")
 
 LEAD_INS = (
     "a key requirement is:",
@@ -94,6 +95,8 @@ class SessionState:
     profile: dict = field(default_factory=dict)
     category_text: str = ""
     slots: dict[str, list[str]] = field(default_factory=dict)
+    disclosed_phrases: list[str] = field(default_factory=list)
+    budget_target: float | None = None
     generic_terms: set[str] = field(default_factory=set)
     asked: list[str] = field(default_factory=list)
     broaden: bool = False
@@ -116,10 +119,17 @@ class SessionState:
             if category:
                 self.category_text = category
         for phrase in extract_disclosed_phrases(message):
+            self.disclosed_phrases.append(phrase)
             self.generic_terms.update(tokenize(phrase))
             attribute = classify_phrase(phrase)
             if attribute:
                 self.slots.setdefault(attribute, []).append(phrase)
+                if attribute == "budget":
+                    number_match = BUDGET_NUMBER_RE.search(phrase)
+                    if number_match:
+                        # Last disclosed budget wins — matches the accumulation/
+                        # override semantics used for every other slot.
+                        self.budget_target = float(number_match.group(1))
         # Anything not caught by a lead-in pattern (e.g. the override sentence
         # itself, or a plain reply) still carries useful terms — keep them all.
         self.generic_terms.update(tokenize(message))

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from dialog_state.state_machine import SessionState
 
-BASE_WEIGHTS = {"keyword": 0.35, "category": 0.20, "vector": 0.20, "slot": 0.20, "tag": 0.05}
+BASE_WEIGHTS = {
+    "keyword": 0.25,
+    "category": 0.15,
+    "vector": 0.15,
+    "slot": 0.15,
+    "tag": 0.05,
+    "phrase": 0.17,
+    "price": 0.08,
+}
 
 
 def adaptive_weights(state: SessionState, intent: str) -> dict[str, float]:

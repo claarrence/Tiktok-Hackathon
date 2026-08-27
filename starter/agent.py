@@ -49,8 +49,11 @@ class Agent:
             category_scores,
             vector_scores,
             self.engine.products,
+            self.engine.raw_text,
             state.slot_tokens(),
             state.preference_terms,
+            state.disclosed_phrases,
+            state.budget_target,
             weights,
         )
         top = ranked[:top_k]

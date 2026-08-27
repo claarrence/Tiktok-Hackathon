@@ -17,12 +17,14 @@ This design is scored directly against the challenge's own metrics: retrieval br
 
 | Metric | Weak BM25 baseline | Our agent | Change |
 |---|---|---|---|
-| Hit Rate@10 | 0.125 | 0.68 | +0.555 |
-| MRR | 0.068 | 0.407 | +0.339 |
-| MTTC | 9.81 | 5.53 | −4.28 turns |
-| TechnicalScore | 0.107 | 0.571 | ~5.3x |
+| Hit Rate@10 | 0.125 | 0.725 | +0.600 |
+| MRR | 0.068 | 0.438 | +0.370 |
+| MTTC | 9.81 | 5.14 | −4.67 turns |
+| TechnicalScore | 0.107 | 0.611 | ~5.7x |
 
-The single biggest lever turned out to be architectural rather than algorithmic: the baseline never asks a clarification question, so it can never unlock the additional product detail the (deterministic, rule-based) evaluator simulator only discloses in response to a targeted `ask_attribute`. Adding the dialog state machine's proactive clarification loop — on top of the same hybrid retrieval idea — is most of the lift. *(Update this table if further tuning changes the numbers before submission.)*
+The single biggest lever turned out to be architectural rather than algorithmic: the baseline never asks a clarification question, so it can never unlock the additional product detail the (deterministic, rule-based) evaluator simulator only discloses in response to a targeted `ask_attribute`. Adding the dialog state machine's proactive clarification loop — on top of the same hybrid retrieval idea — was most of the initial lift.
+
+A follow-up diagnosis of the remaining misses found ~86% were ranking failures, not recall failures — the correct product was almost always somewhere in the retrieval candidate pool, just not pushed into the top 10. Two ranking fixes closed a chunk of that gap: (1) disclosed budget amounts are now compared numerically against the catalog's actual `price` field instead of being (uselessly) token-matched against product text, and (2) disclosed constraint phrases — which are lifted near-verbatim from the target product's own listing text — now get an exact-substring match bonus in the ranker, which is a much stronger disambiguation signal than bag-of-words overlap for telling near-duplicate products apart. *(Update this table again if further tuning changes the numbers before submission.)*
 
 ## Development tools used
 - Python 3.10+ *(confirm team's actual version/IDE — e.g. VSCode, PyCharm, Jupyter)*

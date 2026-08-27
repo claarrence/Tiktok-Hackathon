@@ -46,6 +46,7 @@ class RetrievalEngine:
         self.connection = sqlite3.connect(":memory:")
         self.products: dict[str, dict] = {}
         self.doc_tokens: dict[str, set[str]] = {}
+        self.raw_text: dict[str, str] = {}
         self.category_inverted: dict[str, set[str]] = {}
         self._build_index()
 
@@ -74,6 +75,9 @@ class RetrievalEngine:
                 self.doc_tokens[asin] = set(
                     tokenize(" ".join([title, categories, features, details, store]))
                 )
+                self.raw_text[asin] = " ".join(
+                    [title, categories, features, details, store, description]
+                ).lower()
                 for token in set(tokenize(categories)):
                     self.category_inverted.setdefault(token, set()).add(asin)
 
