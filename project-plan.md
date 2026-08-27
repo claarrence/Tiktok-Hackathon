@@ -88,6 +88,30 @@ Each role owns one pillar end-to-end (code + its own tests) so ownership is unam
 - README (overview, setup, reproduce steps, limitations/future work, contributions), Devpost description, demo video recording/editing/upload, final Devpost submission.
 - **Deliverable:** working `main` branch, complete README, Devpost draft, published YouTube video, submitted entry.
 
+## Current State & Ranking Precision Backlog
+
+A working end-to-end agent already exists on `main` (`retrieval/`, `dialog_state/`, `context_engine/`, `ranking/`, wired together in `starter/agent.py`) as a reference implementation — treat it as a starting point to improve, not a finished system. Whoever picks up Pillar I (retrieval) or Pillar IV (ranking) should read this section before touching those files, so the context carries over even if you're starting a fresh Claude Code session.
+
+**Local eval history on the 200 public dev sessions** (`python3 -m evaluator.local_evaluator`):
+
+| Version | Hit Rate@10 | MRR | MTTC | TechnicalScore |
+|---|---|---|---|---|
+| Weak BM25 baseline | 0.125 | 0.068 | 9.81 | 0.107 |
+| First working pipeline (all 4 pillars, no tuning) | 0.68 | 0.407 | 5.53 | 0.571 |
+| + numeric budget matching + exact-phrase bonus | 0.725 | 0.438 | 5.14 | 0.611 |
+
+**Diagnosis (still true as of the last measurement):** of the ~55 remaining misses, roughly 86% are ranking failures, not recall failures — the correct product is almost always already in the retrieval candidate pool, the ranker (`ranking/ranker.py`) just doesn't push it into the top 10. Most of those misses aren't close either (many rank 51–200th, not 11–20th), meaning this needs real scoring improvements, not just weight nudges. Already fixed: (1) disclosed budget amounts are now compared numerically against the catalog's `price` field instead of being token-matched against product text, and (2) disclosed constraint phrases (which are lifted near-verbatim from the target product's own listing text, by construction of the evaluator's session simulator) now get an exact-substring match bonus in the ranker.
+
+**Candidate fixes not yet implemented, roughly in order of effort:**
+
+1. **TF-IDF cosine similarity instead of Jaccard** for the vector-similarity route in `retrieval/engine.py`. Jaccard treats every token as equally important, so generic words ("clothing," "comfortable") count the same as the words that actually distinguish one product from ten similar ones. Still stdlib-only, no embeddings needed.
+2. **IDF-weight the slot-match score** in `ranking/ranker.py` the same way — a matched "cotton" should count for less than a matched rare, specific detail, since the latter is far more decisive for telling near-duplicate products apart.
+3. **Reciprocal Rank Fusion (RRF)** instead of averaging raw route scores when combining keyword/category/vector signals. BM25, Jaccard/TF-IDF, and category-overlap live on differently-shaped scales; averaging raw scores across them can distort the combination. RRF combines each route's *rank position* instead, which is simpler and more robust for hybrid retrieval.
+4. **Search the ranking weights instead of hand-picking them** (`context_engine/profile.py`'s `BASE_WEIGHTS`). We have 200 labeled dev sessions — a small grid or random search optimizing directly for MRR would likely beat the current hand-tuned values. Costs eval runtime (~40s per full run), so worth trimming the search space.
+5. **Real LLM reranking on the top ~20–30 candidates** — the originally-envisioned Pillar IV design. Only worth it once the cheaper fixes plateau, since it adds latency, cost, and a network dependency that needs an offline fallback documented per `docs/submission_rules.md`.
+
+After implementing a fix, re-run the recall-vs-ranking diagnostic (ask whoever owns integration if you need the script) to confirm misses are actually shrinking and not just moving around.
+
 ## Shared Checklist Before Submitting
 
 - [ ] Agent runs end-to-end on a fresh clone with no manual setup steps missing from the README
