@@ -1,1 +1,11 @@
 notes-private.md
+
+# From the participant kit — local/generated, not committed
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+results.json
+data/catalog.jsonl
+data/catalog.jsonl.gz
+*.log
