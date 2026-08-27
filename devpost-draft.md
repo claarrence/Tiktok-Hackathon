@@ -15,33 +15,38 @@ This design is scored directly against the challenge's own metrics: retrieval br
 
 **Local results on the 200 public dev sessions** (reproducible via `python3 -m evaluator.local_evaluator`):
 
-| Metric | Weak BM25 baseline | Our agent | Change |
-|---|---|---|---|
-| Hit Rate@10 | 0.125 | 0.725 | +0.600 |
-| MRR | 0.068 | 0.438 | +0.370 |
-| MTTC | 9.81 | 5.14 | −4.67 turns |
-| TechnicalScore | 0.107 | 0.611 | ~5.7x |
+| Metric         | Weak BM25 baseline | Our agent | Change       |
+| -------------- | ------------------ | --------- | ------------ |
+| Hit Rate@10    | 0.125              | 0.725     | +0.600       |
+| MRR            | 0.068              | 0.438     | +0.370       |
+| MTTC           | 9.81               | 5.14      | −4.67 turns |
+| TechnicalScore | 0.107              | 0.611     | ~5.7x        |
 
 The single biggest lever turned out to be architectural rather than algorithmic: the baseline never asks a clarification question, so it can never unlock the additional product detail the (deterministic, rule-based) evaluator simulator only discloses in response to a targeted `ask_attribute`. Adding the dialog state machine's proactive clarification loop — on top of the same hybrid retrieval idea — was most of the initial lift.
 
 A follow-up diagnosis of the remaining misses found ~86% were ranking failures, not recall failures — the correct product was almost always somewhere in the retrieval candidate pool, just not pushed into the top 10. Two ranking fixes closed a chunk of that gap: (1) disclosed budget amounts are now compared numerically against the catalog's actual `price` field instead of being (uselessly) token-matched against product text, and (2) disclosed constraint phrases — which are lifted near-verbatim from the target product's own listing text — now get an exact-substring match bonus in the ranker, which is a much stronger disambiguation signal than bag-of-words overlap for telling near-duplicate products apart. *(Update this table again if further tuning changes the numbers before submission.)*
 
 ## Development tools used
+
 - Python 3.10+ *(confirm team's actual version/IDE — e.g. VSCode, PyCharm, Jupyter)*
 - Git / GitHub for version control
 - *(add: any notebook/experiment tooling, if used)*
 
 ## APIs used
+
 - **None, currently.** The "LLM Semantic Ranking" stage is implemented as a local, fully-offline scoring function (BM25 + category-overlap + Jaccard token-similarity + slot-match + profile-tag boost) rather than a hosted LLM call — this is explicitly allowed ("local scoring logic for the LLM ranking stage" is in-scope per the brief) and means the agent has zero network dependency and zero per-call cost. *Open decision for the team: swap the top-N reranking step for a real LLM API call (state which one here) if it beats the local scorer on the dev set — worth an A/B before committing, since it adds cost/latency/network-dependency.*
 
 ## Libraries and frameworks used
+
 - **Python standard library only**: `sqlite3` (in-memory FTS5 full-text index for the keyword retrieval route), `re`, `json`, `dataclasses`. No external dependencies, no `requirements.txt` needed yet — deliberate, since it keeps setup to a single `python3` command and satisfies the "in-memory, no heavy vector DB" constraint for free. *Update this if a teammate adds something (e.g. an embeddings library) for a specific pillar.*
 
 ## Datasets and assets used
+
 - Amazon Reviews 2023 (McAuley Lab, UCSD) — `Clothing_Shoes_and_Jewelry` category, frozen by the organizer to a 50,000-product catalog (SHA256-verified).
 - 200 labeled public development sessions provided by the organizer (Buying, Browsing, Intent Override, and Boundary scenarios).
 - 800 private evaluation sessions held by the organizer for final scoring (not accessible to us).
 - No manually labeled data of our own.
 
 ---
+
 *Reminder: also need — a short method/limitations report, and a latency/token-usage/cost disclosure, per `docs/submission_rules.md`. Those can reuse content from this draft.*
