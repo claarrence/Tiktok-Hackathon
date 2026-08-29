@@ -113,7 +113,7 @@ class RetrievalEngine:
             return {}
         overlap: Counter[str] = Counter()
         for token in wanted:
-            for asin in self.category_inverted.get(token, ()):
+            for asin in sorted(self.category_inverted.get(token, ())):
                 overlap[asin] += 1
         if not overlap:
             return {}
