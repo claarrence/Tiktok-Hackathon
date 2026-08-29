@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from retrieval.engine import tokenize
 
 
@@ -31,6 +33,26 @@ def _phrase_score(raw_text: str, disclosed_phrases: list[str]) -> float:
     return hits / len(meaningful)
 
 
+_IDF_CACHE: dict[int, tuple[dict[str, float], float]] = {}
+
+
+def _catalog_idf(products: dict[str, dict]) -> tuple[dict[str, float], float]:
+    cached = _IDF_CACHE.get(id(products))
+    if cached is not None:
+        return cached
+    doc_freq: dict[str, int] = {}
+    for product in products.values():
+        tokens = set(tokenize(" ".join(str(product.get(f, "")) for f in ("title", "features", "details"))))
+        for token in tokens:
+            doc_freq[token] = doc_freq.get(token, 0) + 1
+    total = len(products)
+    idf = {token: max(0.0, math.log(total / (1 + df))) for token, df in doc_freq.items()}
+    default_idf = max(0.0, math.log(total)) if total > 0 else 0.0
+    result = (idf, default_idf)
+    _IDF_CACHE[id(products)] = result
+    return result
+
+
 def rank(
     candidate_ids: set[str],
     keyword_scores: dict[str, float],
@@ -49,6 +71,7 @@ def rank(
     slot-match precision signal and a personalization boost from the buyer's
     profile, standing in for an LLM reranker without needing a model API."""
     hard_price_filter = intent == "buying" and budget_target is not None
+    slot_idf, slot_idf_default = _catalog_idf(products)
     scored: list[tuple[str, float]] = []
     for asin in candidate_ids:
         product = products.get(asin)
@@ -62,7 +85,10 @@ def rank(
 
         slot_match = 0.0
         if slot_tokens:
-            slot_match = len(slot_tokens & doc_tokens) / len(slot_tokens)
+            total_weight = sum(slot_idf.get(token, slot_idf_default) for token in slot_tokens)
+            if total_weight > 0:
+                matched_weight = sum(slot_idf.get(token, slot_idf_default) for token in (slot_tokens & doc_tokens))
+                slot_match = matched_weight / total_weight
         tag_match = 0.0
         if preference_terms:
             tag_match = len(preference_terms & doc_tokens) / len(preference_terms)
