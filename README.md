@@ -110,3 +110,20 @@ evaluator/local_evaluator.py      public-set simulator and scorer
 
 The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See `DATA_ATTRIBUTION.md` before using or redistributing the data.
 Sessions are sampled deterministically from the official Clothing 5-core leave-last-out split and joined to the frozen catalog.
+
+## Team Contributions
+
+Member A (Maegan) — Retrieval & Intent Routing (Pillar I)
+
+Member B (Caro) — Dialog Strategy (Pillar II)
+
+Member C (Yi Ting) — Context & Personalization (Pillar III)
+  - Built the `context_engine/` module.
+  - Condenses the conversation so far into one summary each turn, and re-tunes how much the agent trusts each search method based on it.
+  - The more the shopper commits to, the harder the agent leans on exact matches.
+  - Feeds the shopper's profile (past-review style, stated preferences) into the ranking.
+  - Wired it into the main agent; fixed a bug that made evaluator scores vary run to run.
+
+Member D (Jessica) — Ranking & Evaluation (Pillar IV)
+
+Member E (Clarence) — Integration, Docs & Submission
