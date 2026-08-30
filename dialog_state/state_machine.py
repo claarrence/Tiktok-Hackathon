@@ -162,6 +162,8 @@ class SessionState:
     last_pool_size: int | None = None
     max_questions: int = 6
     confidence_margin: float = 0.06
+    shallow_answered: set[str] = field(default_factory=set)
+    shallow_follow_up_used: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         rating_style = str(self.profile.get("rating_style", "")).lower()
@@ -203,6 +205,8 @@ class SessionState:
                     self.slots[attribute] = [phrase]
                 else:
                     self.slots.setdefault(attribute, []).append(phrase)
+                if len(tokenize(phrase)) <= 1 and attribute not in self.shallow_follow_up_used:
+                    self.shallow_answered.add(attribute)
                 if attribute == "budget":
                     number_match = BUDGET_NUMBER_RE.search(phrase)
                     if number_match:
@@ -260,10 +264,13 @@ class SessionState:
         for attribute in ATTRIBUTE_PRIORITY:
             if attribute in UNPRODUCTIVE_ATTRIBUTES:
                 continue
-            if attribute in self.slots:
+            if attribute in self.slots and attribute not in self.shallow_answered:
                 continue
-            if attribute in self.asked:
+            if attribute in self.asked and attribute not in self.shallow_answered:
                 continue
             self.asked.append(attribute)
+            if attribute in self.shallow_answered:
+                self.shallow_answered.discard(attribute)
+                self.shallow_follow_up_used.add(attribute)
             return attribute
         return None
