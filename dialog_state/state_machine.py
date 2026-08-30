@@ -114,6 +114,8 @@ class SessionState:
         self.preference_terms = set(tokenize(" ".join(str(tag) for tag in preference_tags)))
 
     def update_from_message(self, message: str, turn: int) -> None:
+        if any(lead_in in message.lower() for lead_in in LEAD_INS if "don't have" in lead_in):
+            self.max_questions += 1
         if turn == 1:
             category = extract_category_text(message)
             if category:
