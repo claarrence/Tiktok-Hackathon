@@ -7,8 +7,8 @@ conversation become so far" judgement lives in exactly one place and can evolve
 turn over turn instead of being recomputed ad hoc by each pillar.
 
 One :class:`ContextDistiller` is held per session (created in ``Agent.reset``);
-it accumulates the cross-turn memory — intent stability, pool trajectory,
-constraint growth, override events — that a single turn cannot see on its own.
+it accumulates the cross-turn memory — pool trajectory, override events — that a
+single turn cannot see on its own.
 """
 
 from __future__ import annotations
@@ -73,7 +73,6 @@ class ContextVector:
     turns_left: int
 
     intent: str
-    intent_stable_turns: int
 
     pool_size: int
     pool_trend: str  # "converging" | "stagnant" | "expanding" | "unknown"
@@ -88,10 +87,8 @@ class ContextVector:
 
     demandingness: float
     rating_style_critical: bool
-    price_sensitivity: float
     tag_focus: float
 
-    maturity: float
     precision_bias: float
 
     policy: TurnPolicy = field(repr=False, default=None)  # type: ignore[assignment]
@@ -108,13 +105,10 @@ class ContextDistiller:
     def __init__(self, profile: dict | None) -> None:
         self.profile = profile or {}
         self.demandingness, self.rating_style_critical = _distill_demandingness(self.profile)
-        self.price_sensitivity = 0.5  # wired but neutral: no informative price signal in this dataset
         preference_tags = self.profile.get("preference_tags") or []
         self.preference_terms = set(tokenize(" ".join(str(tag) for tag in preference_tags)))
 
-        self._intent_history: list[str] = []
         self._pool_history: list[int] = []
-        self._constraint_history: list[int] = []
         self._override_turns: list[int] = []
 
     # -- helpers -----------------------------------------------------------
@@ -122,20 +116,11 @@ class ContextDistiller:
         if not self._pool_history:
             return "unknown"
         previous = self._pool_history[-1]
-        if pool_size <= previous * 0.9:
+        if pool_size <= previous * PARAMS["pool_converging_ratio"]:
             return "converging"
         if pool_size >= previous:
             return "stagnant"
         return "expanding"
-
-    def _intent_stable_turns(self, intent: str) -> int:
-        stable = 1
-        for past in reversed(self._intent_history):
-            if past == intent:
-                stable += 1
-            else:
-                break
-        return stable
 
     def _tag_focus(self, state: SessionState) -> float:
         """How much of the buyer's long-term preference vocabulary the current
@@ -150,7 +135,6 @@ class ContextDistiller:
     def _precision_bias(
         self,
         *,
-        turn: int,
         intent: str,
         confirmed_constraints: int,
         disclosed_phrase_count: int,
@@ -161,7 +145,6 @@ class ContextDistiller:
         p = PARAMS
         bias = (
             p["pb_constraint"] * min(confirmed_constraints, p["pb_constraint_cap"])
-            + p["pb_turn"] * min(turn - 1, p["pb_turn_cap"])
             + p["pb_override"] * override_count
             + p["pb_phrase"] * min(disclosed_phrase_count, p["pb_phrase_cap"])
         )
@@ -191,16 +174,8 @@ class ContextDistiller:
             turn - self._override_turns[-1] if self._override_turns else None
         )
         pool_trend = self._pool_trend(pool_size)
-        intent_stable_turns = self._intent_stable_turns(intent)
 
-        maturity = _clip(
-            0.5 * min((turn - 1) / 5.0, 1.0)
-            + 0.5 * min(confirmed_constraints / 3.0, 1.0),
-            0.0,
-            1.0,
-        )
         precision_bias = self._precision_bias(
-            turn=turn,
             intent=intent,
             confirmed_constraints=confirmed_constraints,
             disclosed_phrase_count=disclosed_phrase_count,
@@ -213,7 +188,6 @@ class ContextDistiller:
             turn=turn,
             turns_left=max(0, MAX_TURNS - turn),
             intent=intent,
-            intent_stable_turns=intent_stable_turns,
             pool_size=pool_size,
             pool_trend=pool_trend,
             stagnant_turns=state.stagnant_turns,
@@ -225,14 +199,10 @@ class ContextDistiller:
             has_budget=state.budget_target is not None,
             demandingness=self.demandingness,
             rating_style_critical=self.rating_style_critical,
-            price_sensitivity=self.price_sensitivity,
             tag_focus=self._tag_focus(state),
-            maturity=maturity,
             precision_bias=precision_bias,
         )
         vector.policy = plan_turn(vector)
 
-        self._intent_history.append(intent)
         self._pool_history.append(pool_size)
-        self._constraint_history.append(confirmed_constraints)
         return vector
