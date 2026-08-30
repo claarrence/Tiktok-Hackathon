@@ -151,9 +151,19 @@ class OverGeneralityTest(unittest.TestCase):
             state.decide_ask_attribute(pool_size=5, top_score=0.9, second_score=0.1)
         )
 
-    def test_filled_slots_are_not_re_asked(self) -> None:
+    def test_shallow_disclosure_earns_one_followup_then_locks(self) -> None:
         state = _state()
-        state.update_from_message("A key requirement is: cotton.", 1)  # fills material
+        state.update_from_message("A key requirement is: cotton.", 1)  # single-token, shallow
+        followup = state.decide_ask_attribute(pool_size=200, top_score=0.5, second_score=0.5)
+        self.assertEqual(followup, "material")  # exactly one follow-up granted
+
+        state.update_from_message("I don't have an additional preference for material.", 2)
+        third_ask = state.decide_ask_attribute(pool_size=200, top_score=0.5, second_score=0.5)
+        self.assertNotEqual(third_ask, "material")  # follow-up consumed, never asked again
+
+    def test_specific_disclosure_is_not_re_asked(self) -> None:
+        state = _state()
+        state.update_from_message("A key requirement is: 96% Cotton, 4% Spandex.", 1)  # multi-token, specific
         asked = []
         for _ in range(len(ATTRIBUTE_PRIORITY)):
             got = state.decide_ask_attribute(pool_size=200, top_score=0.5, second_score=0.5)
