@@ -116,6 +116,29 @@ Sessions are sampled deterministically from the official Clothing 5-core leave-l
 Member A (Maegan) — Retrieval & Intent Routing (Pillar I)
 
 Member B (Caro) — Dialog Strategy (Pillar II)
+  - Built the `dialog_state/` module — the per-session memory that turns a run of
+    separate messages into one evolving picture of what the shopper wants.
+  - Slot accumulation: stated preferences pile up across turns (colour on turn 2,
+    material on turn 4) instead of each message being read in isolation.
+  - Intent override: when the shopper changes their mind ("actually, make it
+    white"), the affected preference is rewritten in place, not left sitting next
+    to the old one; the override turn is recorded for the ranker.
+  - Clarifying questions: when the candidate pool is still too broad, picks the
+    most useful attribute the shopper hasn't answered yet, and never re-asks
+    something already covered or a dead-end field.
+  - Fixed the phrase classifier so open-ended requirements ("buckle closure",
+    "moisture-wicking") land in a real slot instead of being dropped — the ranker
+    was being starved of that signal.
+  - Confirmed "brand" is not an actual catalog field (checked all 50,000 rows)
+    and kept it out of the question queue so no turn is wasted on it.
+  - Made the "search wider" flag switch back off once results reconverge, rather
+    than staying on for the rest of the session and dragging out convergence.
+  - Stopped "I don't have a preference" replies from leaking filler words into the
+    search query.
+  - Added a unit-test suite covering the accumulation, override, question-timing,
+    and broaden-flag paths.
+  - Impact on the 200 local dev sessions: TechnicalScore 0.6146 -> 0.6583,
+    Hit Rate@10 0.730 -> 0.795, MRR 0.451 -> 0.489.
 
 Member C (Yi Ting) — Context & Personalization (Pillar III)
   - Built the `context_engine/` module.
