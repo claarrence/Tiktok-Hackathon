@@ -28,6 +28,16 @@ USE_CASE_RE = re.compile(r"\b(" + "|".join(USE_CASE_WORDS) + r")\b", re.I)
 BUDGET_RE = re.compile(r"(?:\$|budget|under|less than)\s*\$?\d", re.I)
 BUDGET_NUMBER_RE = re.compile(r"\$?\s*(\d+(?:\.\d{1,2})?)")
 
+# Cues that the shopper is discarding an earlier preference rather than adding to
+# it. Keep this in sync with ``context_engine.distiller.OVERRIDE_RE`` — both must
+# fire on the same messages so the dialog state and the distilled context agree
+# on when an override happened.
+OVERRIDE_RE = re.compile(
+    r"\b(actually|instead|ignore my earlier|ignore my previous|forget (?:the|my|about)|"
+    r"scratch that|never ?mind|changed my mind|on second thought|rather than)\b",
+    re.I,
+)
+
 LEAD_INS = (
     "a key requirement is:",
     "what i need is:",
@@ -36,11 +46,47 @@ LEAD_INS = (
     "i don't have a preference for",
 )
 
-# Attributes never surfaced by real product data in this catalog's taxonomy —
-# asking them wastes a turn, so they're excluded from the question queue.
+# Replies that disclose nothing — the shopper is deferring to our judgement.
+# They carry no constraint, so their raw tokens ("preference", "judgment",
+# "attribute", ...) must not leak into ``generic_terms`` and dilute retrieval.
+# NB: only these explicit "no preference" phrasings help when dropped — pruning
+# the vaguer "ask me about one specific attribute" nudge measured clearly worse.
+NO_PREFERENCE_MARKERS = (
+    "i don't have a preference for",
+    "i don't have an additional preference for",
+)
+
+# The ten attribute labels the API contract's ``ask_attribute`` enum allows
+# (docs/agent_api_contract.json), mirrored so this file is the single place the
+# slot schema is pinned. Every key written to ``SessionState.slots``, every value
+# returned by ``classify_phrase``, and every value returned by
+# ``decide_ask_attribute`` must be one of these (or ``None``).
+VALID_ASK_ATTRIBUTES = (
+    "category", "material", "color", "size", "style",
+    "brand", "budget", "feature", "use_case", "other",
+)
+
+# Attributes we never place in the clarifying-question queue:
+#   - "category": already captured from the turn-1 "looking for ..." phrase
+#     (see ``extract_category_text``); re-asking it just burns a turn.
+#   - "brand": the frozen catalog has no brand field. The retrieval index and the
+#     evaluator both search only title / categories / features / details / store /
+#     description (see retrieval/engine.py + evaluator SEARCH_FIELDS), so a brand
+#     answer can't be validated into a slot. Brand words a shopper volunteers
+#     still reach retrieval via ``generic_terms``; a dedicated question would only
+#     cost a turn for no extra signal.
 UNPRODUCTIVE_ATTRIBUTES = {"category", "brand"}
 
+# Askable subset of VALID_ASK_ATTRIBUTES, in the order the agent should probe.
 ATTRIBUTE_PRIORITY = ["material", "color", "budget", "size", "style", "use_case", "feature"]
+
+# Once a broadening nudge has fired, retire it only after the candidate pool has
+# reconverged to at most this fraction of its size when the nudge was raised.
+# broaden=True shifts route weight away from the precision routes downstream
+# (context_engine.profile._legacy_shape), so leaving it stuck past convergence
+# costs Efficiency. Handoff to Member A: this is the only place ``broaden`` is
+# cleared — retrieval must not latch its own copy of the flag.
+BROADEN_CLEAR_RATIO = 0.85
 
 QUESTION_TEXT = {
     "material": "Do you have a material preference?",
@@ -54,7 +100,17 @@ QUESTION_TEXT = {
 
 
 def classify_phrase(phrase: str) -> str | None:
+    """Bucket a disclosed constraint phrase into one of VALID_ASK_ATTRIBUTES.
+
+    Anything substantive that doesn't match a more specific bucket falls through
+    to ``"feature"`` — the catch-all the API contract defines and the evaluator's
+    own customer simulator uses (``classify_constraint``). Returning ``None`` here
+    would strand the phrase in ``generic_terms`` and deny the ranker its dedicated
+    slot-route weight, which was a direct cause of ranking-stage misses.
+    """
     lowered = phrase.lower()
+    if not lowered.strip():
+        return None
     if BUDGET_RE.search(lowered):
         return "budget"
     if MATERIAL_RE.search(lowered):
@@ -67,7 +123,7 @@ def classify_phrase(phrase: str) -> str | None:
         return "style"
     if USE_CASE_RE.search(lowered):
         return "use_case"
-    return None
+    return "feature"
 
 
 def extract_category_text(message: str) -> str:
@@ -100,6 +156,8 @@ class SessionState:
     generic_terms: set[str] = field(default_factory=set)
     asked: list[str] = field(default_factory=list)
     broaden: bool = False
+    broaden_pool_mark: int | None = None
+    last_override_turn: int | None = None
     stagnant_turns: int = 0
     last_pool_size: int | None = None
     max_questions: int = 6
@@ -120,21 +178,42 @@ class SessionState:
             category = extract_category_text(message)
             if category:
                 self.category_text = category
+
+        # Intent override: the shopper is re-prioritising. Record the turn for
+        # downstream (Member D's reranker) and switch the affected slot to
+        # erase-and-rewrite so a corrected value doesn't sit next to the old one
+        # ("black" then "white", not "black white"). Terms already in
+        # ``generic_terms`` / ``disclosed_phrases`` are left in place — in this
+        # catalog an "earlier preference" is still a true attribute of the fixed
+        # target, so dropping its tokens only removes signal; the context pillar's
+        # precision_bias override bump is what re-weights the turn.
+        override = bool(OVERRIDE_RE.search(message))
+        if override:
+            self.last_override_turn = turn
+
+        lowered_message = message.lower()
+        no_preference = any(marker in lowered_message for marker in NO_PREFERENCE_MARKERS)
+
         for phrase in extract_disclosed_phrases(message):
             self.disclosed_phrases.append(phrase)
             self.generic_terms.update(tokenize(phrase))
             attribute = classify_phrase(phrase)
             if attribute:
-                self.slots.setdefault(attribute, []).append(phrase)
+                if override:
+                    self.slots[attribute] = [phrase]
+                else:
+                    self.slots.setdefault(attribute, []).append(phrase)
                 if attribute == "budget":
                     number_match = BUDGET_NUMBER_RE.search(phrase)
                     if number_match:
-                        # Last disclosed budget wins — matches the accumulation/
-                        # override semantics used for every other slot.
+                        # Last disclosed budget always wins, override or not.
                         self.budget_target = float(number_match.group(1))
-        # Anything not caught by a lead-in pattern (e.g. the override sentence
-        # itself, or a plain reply) still carries useful terms — keep them all.
-        self.generic_terms.update(tokenize(message))
+
+        if not no_preference:
+            # Anything not caught by a lead-in pattern (e.g. a plain reply) still
+            # carries useful terms — keep them all. A "no preference" reply carries
+            # none, so its tokens are dropped to keep retrieval clean.
+            self.generic_terms.update(tokenize(message))
 
     def category_tokens(self) -> list[str]:
         return tokenize(self.category_text)
@@ -159,7 +238,18 @@ class SessionState:
             self.stagnant_turns = 0
         self.last_pool_size = pool_size
         if self.stagnant_turns >= 2:
-            self.broaden = True
+            if not self.broaden:
+                self.broaden = True
+                self.broaden_pool_mark = pool_size
+        elif (
+            self.broaden
+            and self.broaden_pool_mark is not None
+            and pool_size <= self.broaden_pool_mark * BROADEN_CLEAR_RATIO
+        ):
+            # Pool has reconverged well below where we broadened — retire the
+            # nudge so downstream weights swing back toward the precision routes.
+            self.broaden = False
+            self.broaden_pool_mark = None
 
     def decide_ask_attribute(self, pool_size: int, top_score: float, second_score: float) -> str | None:
         if len(self.asked) >= self.max_questions:

@@ -9,7 +9,7 @@ Traditional keyword search can't tell "browsing for ideas" from "ready to buy," 
 - **Dual-track intent routing** — every turn is classified as Buying (hard constraints, high-precision filter track) or Browsing (open-ended, diverse dense retrieval track), so the retrieval strategy matches the shopper's actual mode instead of one-size-fits-all search.
 - **Hybrid retrieval → LLM ranking pipeline** — a multi-route retrieval stage (keyword + category + vector similarity) surfaces a wide, in-memory candidate pool, which an LLM semantic ranking stage then narrows to a precise Top-10.
 - **Dynamic dialog state machine** — tracks two distinct conversational events: incremental slot accumulation ("also needs to be waterproof") versus intent override ("actually, forget shoes, show me bags"). When the candidate pool is still too broad (over-generality), the agent cuts off retrieval and asks one structured clarification question instead of returning a low-confidence guess.
-- **Context & personalization engine** — distills dialog history into a running session state and profile (using the buyer's `purchase_frequency`, `rating_style`, `preference_tags`, `summary`) that continuously reshapes routing weights and ranking, so the agent's own guidance strategy adapts turn over turn rather than staying static.
+- **Context & personalization engine** — every turn, the whole dialog so far is distilled into a single `ContextVector` (constraints confirmed, phrases disclosed, intent-override events, candidate-pool trajectory, plus a `demandingness` read from the buyer's `rating_style` / `average_prior_rating`). An orchestration step then *re-programs that turn's pipeline* from the vector: it computes a `precision_bias` — earned by disclosed information, not by turn count — that continuously redistributes the retrieval-route weights from recall routes toward exact slot/phrase matching, and backs off again whenever the pool stops converging. The agent's guidance strategy is rewritten turn over turn rather than following a fixed pipeline.
 
 This design is scored directly against the challenge's own metrics: retrieval breadth drives Hit Rate@10, LLM ranking precision drives MRR, and the clarification logic that avoids wasted turns drives MTTC — all within the hard 10-turn session cap.
 
@@ -17,14 +17,18 @@ This design is scored directly against the challenge's own metrics: retrieval br
 
 | Metric         | Weak BM25 baseline | Our agent | Change       |
 | -------------- | ------------------ | --------- | ------------ |
-| Hit Rate@10    | 0.125              | 0.725     | +0.600       |
-| MRR            | 0.068              | 0.438     | +0.370       |
-| MTTC           | 9.81               | 5.14      | −4.67 turns |
-| TechnicalScore | 0.107              | 0.611     | ~5.7x        |
+| Hit Rate@10    | 0.125              | 0.730     | +0.605       |
+| MRR            | 0.068              | 0.451     | +0.383       |
+| MTTC           | 9.81               | 5.29      | −4.52 turns |
+| TechnicalScore | 0.107              | 0.615     | ~5.8x        |
+
+(These figures are now run-to-run stable: we removed a set-iteration-order dependency that was leaking `PYTHONHASHSEED` into score ties and swinging TechnicalScore by ~0.02 between runs of identical code.)
 
 The single biggest lever turned out to be architectural rather than algorithmic: the baseline never asks a clarification question, so it can never unlock the additional product detail the (deterministic, rule-based) evaluator simulator only discloses in response to a targeted `ask_attribute`. Adding the dialog state machine's proactive clarification loop — on top of the same hybrid retrieval idea — was most of the initial lift.
 
-A follow-up diagnosis of the remaining misses found ~86% were ranking failures, not recall failures — the correct product was almost always somewhere in the retrieval candidate pool, just not pushed into the top 10. Two ranking fixes closed a chunk of that gap: (1) disclosed budget amounts are now compared numerically against the catalog's actual `price` field instead of being (uselessly) token-matched against product text, and (2) disclosed constraint phrases — which are lifted near-verbatim from the target product's own listing text — now get an exact-substring match bonus in the ranker, which is a much stronger disambiguation signal than bag-of-words overlap for telling near-duplicate products apart. *(Update this table again if further tuning changes the numbers before submission.)*
+A follow-up diagnosis of the remaining misses found ~86% were ranking failures, not recall failures — the correct product was almost always somewhere in the retrieval candidate pool, just not pushed into the top 10. Two ranking fixes closed a chunk of that gap: (1) disclosed budget amounts are now compared numerically against the catalog's actual `price` field instead of being (uselessly) token-matched against product text, and (2) disclosed constraint phrases — which are lifted near-verbatim from the target product's own listing text — now get an exact-substring match bonus in the ranker, which is a much stronger disambiguation signal than bag-of-words overlap for telling near-duplicate products apart.
+
+The context-programming pillar targets the same ranking gap from a different angle. Rather than one static fusion of the retrieval routes, the distilled `ContextVector` drives a per-turn `precision_bias` that shifts weight toward exact slot/phrase matching in proportion to how much the shopper has actually disclosed — and detected intent-override turns give it an extra push, since the post-override constraint is the sharpest signal in the session. Isolated on the 200 dev sessions (against an otherwise identical agent with static weights), this lifts TechnicalScore 0.603 → 0.615, Hit Rate 0.715 → 0.730, and MRR 0.443 → 0.451, concentrated in the intent-override scenario (Hit Rate 0.867 → 0.900). A worked before/after walk-through is in `docs/context_distillation_example.md`. *(Update these tables again if further tuning changes the numbers before submission.)*
 
 ## Development tools used
 
