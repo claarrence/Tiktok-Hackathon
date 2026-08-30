@@ -2,11 +2,12 @@
 
 ``adaptive_weights`` takes the distilled :class:`~context_engine.distiller.ContextVector`
 and returns the per-route weight vector the ranker fuses with. The first block
-reproduces the original intent-only rule table exactly; the second block layers
-on the session trajectory (``precision_bias``) and the buyer's profile
-(``demandingness``, ``tag_focus``, ``price_sensitivity``). With every ``PARAMS``
-coefficient at 0 — and the distiller emitting a neutral vector — the second block
-is a no-op and this function is byte-identical to the pre-pillar behaviour.
+reproduces the original intent-only rule table exactly (from the ``legacy_*``
+params); the second block layers on the session trajectory (``precision_bias``)
+and the buyer's profile (``demandingness``, ``tag_focus``). With every ``pb_*`` /
+``w_*`` coefficient at 0 — and the distiller emitting a neutral vector — the
+second block is a no-op and this function is byte-identical to the pre-pillar
+behaviour.
 """
 
 from __future__ import annotations
@@ -25,24 +26,25 @@ BASE_WEIGHTS = {
 
 
 def _legacy_shape(weights: dict[str, float], intent: str, broaden: bool, critical: bool) -> None:
-    """The original static rule table (kept verbatim for a safe fallback)."""
+    """The original static rule table (deltas live in PARAMS as ``legacy_*``)."""
+    p = PARAMS
     if intent == "buying":
-        weights["slot"] += 0.15
-        weights["category"] += 0.05
-        weights["vector"] -= 0.10
-        weights["keyword"] -= 0.10
+        weights["slot"] += p["legacy_buying_slot"]
+        weights["category"] += p["legacy_buying_category"]
+        weights["vector"] += p["legacy_buying_vector"]
+        weights["keyword"] += p["legacy_buying_keyword"]
     else:
-        weights["vector"] += 0.10
-        weights["category"] -= 0.05
-        weights["slot"] -= 0.05
+        weights["vector"] += p["legacy_browsing_vector"]
+        weights["category"] += p["legacy_browsing_category"]
+        weights["slot"] += p["legacy_browsing_slot"]
 
     if broaden:
-        weights["category"] = max(0.0, weights["category"] - 0.15)
-        weights["vector"] += 0.10
-        weights["keyword"] += 0.05
+        weights["category"] = max(0.0, weights["category"] + p["legacy_broaden_category"])
+        weights["vector"] += p["legacy_broaden_vector"]
+        weights["keyword"] += p["legacy_broaden_keyword"]
 
     if critical:
-        weights["slot"] += 0.05
+        weights["slot"] += p["legacy_critical_slot"]
 
 
 def adaptive_weights(context) -> dict[str, float]:
@@ -72,10 +74,6 @@ def adaptive_weights(context) -> dict[str, float]:
     # --- personalization modulation, centred so 0.5 == no change ---
     if context.tag_focus != 0.5:
         weights["tag"] = max(0.0, weights["tag"] + p["w_tag"] * (context.tag_focus - 0.5))
-    if context.has_budget and context.price_sensitivity != 0.5:
-        weights["price"] = max(
-            0.0, weights["price"] + p["w_price"] * (context.price_sensitivity - 0.5)
-        )
 
     total = sum(max(0.0, value) for value in weights.values()) or 1.0
     return {key: max(0.0, value) / total for key, value in weights.items()}

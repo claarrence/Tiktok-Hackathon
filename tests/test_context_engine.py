@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import unittest
 
 from context_engine.distiller import ContextDistiller, ContextVector, _distill_demandingness
@@ -36,12 +39,12 @@ def neutral_vector(intent="browsing", broaden=False, critical=False) -> ContextV
     """A ContextVector with every trajectory/personalization signal at its
     no-op value, so adaptive_weights must fall back to the legacy table."""
     return ContextVector(
-        turn=1, turns_left=9, intent=intent, intent_stable_turns=1,
+        turn=1, turns_left=9, intent=intent,
         pool_size=0, pool_trend="unknown", stagnant_turns=0, broaden=broaden,
         confirmed_constraints=0, disclosed_phrase_count=0, override_count=0,
         turns_since_override=None, has_budget=False,
         demandingness=0.5, rating_style_critical=critical,
-        price_sensitivity=0.5, tag_focus=0.5, maturity=0.0, precision_bias=0.0,
+        tag_focus=0.5, precision_bias=0.0,
     )
 
 
@@ -66,8 +69,6 @@ class BackwardCompatTest(unittest.TestCase):
             vec.precision_bias = 0.9
             vec.demandingness = 1.0
             vec.tag_focus = 1.0
-            vec.has_budget = True
-            vec.price_sensitivity = 1.0
             got = adaptive_weights(vec)
             want = legacy_adaptive_weights("buying", False, False)
             for key in BASE_WEIGHTS:
@@ -226,18 +227,46 @@ class AgentPolicyTest(unittest.TestCase):
         self.assertEqual(response["ask_attribute"], None)
         self.assertLessEqual(len(response["recommendations"]), 10)
 
-    def test_recommendations_are_hash_seed_independent(self) -> None:
-        # The pillar's before/after numbers are only meaningful if a fixed
-        # session yields identical rankings run to run. Guards the sorts in
-        # Agent.respond (candidate pool) and RetrievalEngine.category_route.
-        self.agent.reset("ctx-det", {"preference_tags": ["fit"], "rating_style": "mixed"})
-        first = self.agent.respond("ctx-det", "I'm looking for hiking boots. A key requirement is: waterproof.", 1, 10)
-        self.agent.reset("ctx-det", {"preference_tags": ["fit"], "rating_style": "mixed"})
-        second = self.agent.respond("ctx-det", "I'm looking for hiking boots. A key requirement is: waterproof.", 1, 10)
-        self.assertEqual(
-            [r["parent_asin"] for r in first["recommendations"]],
-            [r["parent_asin"] for r in second["recommendations"]],
+
+_SLOW = unittest.skipUnless(
+    os.environ.get("CTX_SLOW_TESTS"),
+    "slow (loads the catalog / runs the evaluator); set CTX_SLOW_TESTS=1",
+)
+
+
+@_SLOW
+class SlowIntegrationTest(unittest.TestCase):
+    """Opt-in checks that actually exercise the full pipeline."""
+
+    _ONE_TURN = (
+        "from starter.agent import Agent; "
+        "a = Agent('data/catalog.jsonl'); a.reset('s', {}); "
+        "r = a.respond('s', \"I'm looking for hiking boots. A key requirement is: waterproof.\", 1, 10); "
+        "print(','.join(x['parent_asin'] for x in r['recommendations']))"
+    )
+
+    def _run_one_turn(self, hash_seed: str) -> str:
+        env = {**os.environ, "PYTHONHASHSEED": hash_seed}
+        out = subprocess.run(
+            [sys.executable, "-c", self._ONE_TURN],
+            capture_output=True, text=True, env=env, check=True,
         )
+        return out.stdout.strip()
+
+    def test_recommendations_are_hash_seed_independent(self) -> None:
+        # Two *separate processes* with different PYTHONHASHSEED — the only way
+        # to actually catch set-iteration order leaking into the ranking.
+        self.assertEqual(self._run_one_turn("0"), self._run_one_turn("1"))
+
+    def test_technicalscore_stays_above_floor(self) -> None:
+        # Guards against a bad params.py retune silently regressing the pillar.
+        from evaluator.local_evaluator import load_jsonl, catalog_index, evaluate
+        from starter.agent import Agent
+
+        samples = load_jsonl("data/public_set.jsonl")
+        cids, cats, prods = catalog_index("data/catalog.jsonl")
+        result = evaluate(Agent("data/catalog.jsonl"), samples, cids, cats, prods)
+        self.assertGreaterEqual(result["recommended_technical_score"], 0.61)
 
 
 if __name__ == "__main__":
