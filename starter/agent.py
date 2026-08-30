@@ -73,6 +73,7 @@ class Agent:
             state.disclosed_phrases,
             state.budget_target,
             weights,
+            intent,
         )
         top = ranked[:top_k]
         recommendations = [{"parent_asin": asin, "score": round(score, 4)} for asin, score in top]
