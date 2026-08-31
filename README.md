@@ -31,7 +31,7 @@ Four pipeline stages, wired together per turn in `starter/agent.py`:
 - **Context & personalization engine** (`context_engine/`) — distills the whole session so far (disclosed constraints, override events, buyer profile) into a `ContextVector` each turn, which re-weights the retrieval routes toward precision as more gets disclosed.
 - **Ranking** (`ranking/ranker.py`) — fuses the three retrieval routes with slot-match, phrase-match, price-fit, and rating signals into one score, standing in for an LLM reranker without a model API call (see "Model Choice and Cost" below). A bounded second pass re-resolves near-ties among the leading candidates using rarity computed within just that cluster rather than the whole catalog.
 
-**Current results on the 200 public dev sessions** (`python3 -m evaluator.local_evaluator`): Hit Rate@10 **0.950**, MRR **0.641**, MTTC **4.18**, TechnicalScore **0.804** — up from the weak BM25 baseline's 0.107 (`docs/baseline_results.json`). Full iteration history and the reasoning behind each change: `project-plan.md`.
+**Current results on the 200 public dev sessions** (`python3 -m evaluator.local_evaluator`): Hit Rate@10 **0.950**, MRR **0.641**, MTTC **4.18**, TechnicalScore **0.804** — up from the weak BM25 baseline's 0.107 (`docs/baseline_results.json`). Full iteration history and the reasoning behind each change: see "Development History and Diagnosis" below.
 
 ## Download the Catalog
 
@@ -125,18 +125,49 @@ evaluator/local_evaluator.py      public-set simulator and scorer
 The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See `DATA_ATTRIBUTION.md` before using or redistributing the data.
 Sessions are sampled deterministically from the official Clothing 5-core leave-last-out split and joined to the frozen catalog.
 
+## Development History and Diagnosis
+
+An earlier version of this agent existed as a reference implementation before tuning; treat the numbers below as the record of how it got from there to the current state, not just a final score.
+
+**Local eval history on the 200 public dev sessions** (`python3 -m evaluator.local_evaluator`):
+
+| Version | Hit Rate@10 | MRR | MTTC | TechnicalScore |
+|---|---|---|---|---|
+| Weak BM25 baseline | 0.125 | 0.068 | 9.81 | 0.107 |
+| First working pipeline (all 4 pillars, no tuning) | 0.68 | 0.407 | 5.53 | 0.571 |
+| + numeric budget matching + exact-phrase bonus | 0.725 | 0.438 | 5.14 | 0.611 |
+| + IDF-weighted slot match, hard price filter, context-engine precision_bias (grid-searched, `context_engine/params.py`) | 0.730 | 0.451 | 5.29 | 0.615 |
+| + dialog-strategy fixes (shallow-disclosure follow-ups, question-budget exhaustion, override/broaden-reset) — largest single contributor | 0.940 | 0.628 | 4.43 | 0.7875 |
+| + TF-IDF cosine replacing Jaccard on the vector route (isolated effect, holding the row above constant) | 0.940 | 0.628 | 4.43 | 0.7899 |
+| + category_route tie-preservation fix (below) | 0.950 | 0.635 | 4.18 | 0.8020 |
+| + cluster-local phrase-rarity tie-break second pass (below) | **0.950** | **0.641** | **4.18** | **0.8037** |
+
+**Correction:** an earlier internal draft of this table attributed a "0.615 → 0.790" jump to the TF-IDF change alone. That was confounded — it compared against a stale baseline that predated the dialog-strategy fixes landing in parallel on a different branch. Measured properly in isolation (holding the already-improved dialog-strategy code fixed, changing only the vector route): TechnicalScore 0.7875 → 0.7899, a small, real gain (+0.003), not the largest lever. The dialog-strategy fixes are the actual largest single contributor — roughly 0.615 → 0.7875 — though that comparison isn't as cleanly isolated as the vector-route A/B since other small changes landed in the same span.
+
+**Diagnosis history:** the original finding was that most misses were ranking failures (target already in the candidate pool, just not surfaced in the top 10), not recall failures — this motivated most of the fixes below.
+
+**`category_route` bugfix (`retrieval/engine.py`):** with a broad, widely-shared category path (e.g. "Wallets" — 1,636 products, "Card Cases & Money Organizers Wallets" — 482 full matches), the old `overlap.most_common(200)` hard-cut silently dropped some full-overlap ties in arbitrary (insertion/ASIN) order — a genuinely correct candidate could land at `category_score=0.0` purely by alphabetical bad luck while an unrelated tie-mate got full credit. Fixed by always keeping every candidate tied for the *best* overlap score, however many there are; the limit now only bounds the lower, partial-match tiers. Diagnosed from a real failing Buying session (`public_0017`). Lifted TechnicalScore 0.7899 → 0.8020, but barely moved Buying's rank-1 rate specifically, which pointed at a separate, still-open problem.
+
+**Cluster-local phrase-rarity tie-break (`ranking/ranker.py`, `_disambiguate_ties`):** traced 44 Buying near-misses (target found somewhere in the top 10, but not rank 1) and found the fused score was landing in genuine near-ties — median gap 0.038 out of ~1.0, max 0.15 — between the target and a near-duplicate catalog item sharing the same disclosed constraint (two alloy necklaces, two "Imported, 100% Polyester" rain jackets). Catalog-wide IDF doesn't distinguish a phrase's rarity *within that specific tie cluster*, even when it's globally rare. Added a bounded second pass: candidates within a small margin (`TIE_BAND = 0.08`) of the leading score get their disclosed phrases re-weighted by document frequency computed only within that cluster, nudging the score by at most half that margin — enough to settle a genuine tie, never enough to overturn a lead earned outside the band. Phrase-substring only, not bag-of-words over single tokens: an earlier version scored individual tokens and let a template artifact (the literal word "color" from a disclosed "color: green") coincidentally match an unrelated product's "Color" spec key and flip a correct rank-1 — a cluster this small (single digits to ~20 candidates) can't survive that kind of noise. Verified against all 200 dev sessions: 0 regressions, MRR 0.635 → 0.641, TechnicalScore 0.8020 → 0.8037. Notably, **Buying's rank-1 rate itself didn't move** (still 33/77, 42.9%) — Browsing picked up the gain instead (55.7% → 58.2%).
+
+**Current diagnosis:** recall is essentially solved — only 10/200 sessions miss entirely (Hit Rate@10 0.950). The remaining lever is **rank-1 precision** (drives MRR, 30% of TechnicalScore): only ~53% of hits land at rank 1 overall, and Buying specifically sits at ~43% despite disclosing a constraint from turn 1 — worse than Browsing (~58%) and much worse than Intent Override (~85%). Two ranking-fusion fixes have now landed and both barely moved Buying's rank-1 rate specifically, which narrows the diagnosis: about a third of Buying's 80 sessions hit the top-10 on turn 1, before any clarifying question is even asked, off a single disclosed constraint that's almost always a generic material word (alloy, polyester, rayon...) shared by every near-duplicate in the cluster. The challenge's own scoring rule locks in a session's rank at the *first* turn the target enters the top 10 (`docs/evaluation_config.json`), so there's no later turn for a smarter question to help — no amount of ranking-side re-weighting can recover information that was never disclosed. Reaching that subset needs a dialog-policy change (e.g. front-loading a more discriminating question), not another ranking weight tweak — a real precision/efficiency trade to make deliberately, not stumble into. Left open rather than risking a late, untested change this close to the deadline.
+
+**Tried and deliberately not kept — Reciprocal Rank Fusion (RRF):** replacing the raw-score route combination with rank-position fusion. Implemented, then its weights were grid-searched (~63 trials, `context_engine/profile.py`'s `BASE_WEIGHTS` + a new `RRF_K` constant) since the existing hand/grid-tuned weights weren't calibrated for RRF's different score distribution. Best invariant-respecting result: TechnicalScore 0.789, a statistical tie with the raw-score baseline — but it traded MRR down for a slightly better hit rate, and Boundary-scenario MRR got meaningfully worse. Reverted: not worth the added `RRF_K` tuning surface for a tie.
+
+**Remaining candidate, not implemented:** real LLM reranking on the top ~20-30 candidates — the originally-envisioned ranking-stage design. Only worth it once the cheaper fixes plateau, since it adds latency, cost, and a network dependency that needs an offline fallback documented per `docs/submission_rules.md`. With TechnicalScore already at 0.80, the marginal value here is shrinking — not worth the added complexity/risk this close to the deadline.
+
 ## Limitations and Future Work
 
-- **Buying scenario rank-1 precision (~43% of hits)** is the clearest remaining gap — well below Browsing (~58%) and Intent Override (~85%) despite Buying disclosing a constraint from turn 1. Tracing failing sessions found two causes: (1) near-duplicate catalog items sharing the same disclosed constraint (two alloy necklaces, two "Imported, 100% Polyester" rain jackets) landing in genuine near-ties, since global IDF doesn't capture rarity *within a specific pair* — addressed by a cluster-local phrase-rarity second pass in the ranker (see `project-plan.md`); and (2) about a third of Buying sessions hit the top-10 on turn 1, before any clarifying question is asked, off one generic disclosed word — the scoring rule locks in rank at the first turn a hit occurs, so there's no later turn for a smarter question to help. That second cause is a dialog-policy problem (which question to front-load, traded against MTTC), not a ranking one, and is left open rather than risking a late untested change.
+- **Buying scenario rank-1 precision (~43% of hits)** is the clearest remaining gap. See "Current diagnosis" above — it's a dialog-policy problem (which question to front-load, traded against MTTC), not a ranking one, and is left open rather than risking a late untested change.
 - **No hosted LLM reranking stage.** The local scorer is competitive (TechnicalScore 0.804) and keeps cost/latency/network-dependency at zero; a prompted reranker over the top ~20-30 candidates was the original design for this stage and remains a natural next step if time/budget allow an A/B against the local scorer.
 - **Boundary scenario has the smallest sample** in the public dev set (10/200 sessions), so its metrics are the noisiest of the four scenario breakdowns and shouldn't be over-tuned against.
-- **Reciprocal Rank Fusion was tried and reverted** for the route-combination step (see `project-plan.md`) — tuned to a statistical tie with the simpler raw-score fusion while costing Boundary MRR. Worth knowing before re-attempting it from scratch.
+- **Reciprocal Rank Fusion was tried and reverted** for the route-combination step (see above) — tuned to a statistical tie with the simpler raw-score fusion while costing Boundary MRR. Worth knowing before re-attempting it from scratch.
 
 ## Team Contributions
 
 Member A (Maegan) — Retrieval & Intent Routing (Pillar I)
   - Owned `retrieval/`: the dual-track Buying/Browsing intent classifier and the initial multi-route retrieval design (keyword, category, vector) that the other three pillars build candidate pools from.
-  - *(Maegan/team: add specifics + before/after impact numbers here, mirroring Member B/C below — this entry is currently role-scope only, filled in from `project-plan.md`'s role plan rather than commit-level detail.)*
+  - *(Maegan/team: add specifics + before/after impact numbers here, mirroring Member B/C below — this entry is currently role-scope only.)*
 
 Member B (Caro) — Dialog Strategy (Pillar II)
   - Built the `dialog_state/` module — the per-session memory that turns a run of
@@ -172,12 +203,12 @@ Member C (Yi Ting) — Context & Personalization (Pillar III)
 
 Member D (Jessica) — Ranking & Evaluation (Pillar IV)
   - Owned `ranking/`: the local semantic-ranking function that fuses the retrieval routes into a final score, and ran the evaluator throughout to track Hit Rate@10/MRR/MTTC across iterations.
-  - *(Jessica/team: add specifics + before/after impact numbers here, mirroring Member B/C above — this entry is currently role-scope only, filled in from `project-plan.md`'s role plan rather than commit-level detail.)*
+  - *(Jessica/team: add specifics + before/after impact numbers here, mirroring Member B/C above — this entry is currently role-scope only.)*
 
 Member E (Clarence) — Integration, Docs & Submission
   - Owned the shared `Agent` data contract from day 1 and ran the Sunday integration merge across all four pillar branches.
   - Diagnosed and fixed a `category_route` bug found from tracing an actual failing Buying session: a top-200 cutoff was silently dropping legitimately-tied candidates in arbitrary order on broad categories, scoring a correct product `category=0.0` purely by alphabetical bad luck. Fix: keep every candidate tied for the best overlap score regardless of count (`retrieval/engine.py`). Lifted TechnicalScore 0.7899 -> 0.8020.
   - Replaced the vector route's Jaccard similarity with TF-IDF cosine (`retrieval/engine.py`), and consolidated slot-match scoring onto the same catalog-wide IDF the vector route uses, so both routes agree on what counts as a rare, discriminating term.
-  - Diagnosed why Buying's rank-1 rate (~43% of hits) lagged every other scenario despite disclosing the most information per session, then added a bounded cluster-local phrase-rarity second pass to the ranker that resolves genuine near-ties among near-duplicate candidates without ever overturning a lead earned outside that tie band (`ranking/ranker.py`). Verified against all 200 dev sessions with zero regressions: MRR 0.635 -> 0.641, TechnicalScore 0.8020 -> 0.8037. Also identified that the remainder of the Buying gap is a dialog-policy problem, not a ranking one, and scoped it out of this submission rather than risking a late untested change (see `project-plan.md`).
+  - Diagnosed why Buying's rank-1 rate (~43% of hits) lagged every other scenario despite disclosing the most information per session, then added a bounded cluster-local phrase-rarity second pass to the ranker that resolves genuine near-ties among near-duplicate candidates without ever overturning a lead earned outside that tie band (`ranking/ranker.py`). Verified against all 200 dev sessions with zero regressions: MRR 0.635 -> 0.641, TechnicalScore 0.8020 -> 0.8037. Also identified that the remainder of the Buying gap is a dialog-policy problem, not a ranking one, and scoped it out of this submission rather than risking a late untested change (see "Development History and Diagnosis" above).
   - Tried and reverted Reciprocal Rank Fusion for route combination after grid-searching its weights to a statistical tie with the simpler raw-score approach, at a cost to Boundary-scenario MRR.
   - Repo hygiene, README, Devpost draft (including two documented corrections to earlier confounded benchmark claims — see `devpost-draft.md`), and final submission.

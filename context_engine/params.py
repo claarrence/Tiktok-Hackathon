@@ -1,9 +1,8 @@
 """Single tuning surface for the context & personalization pillar.
 
 Everything the distiller and the adaptive-weight shaper read lives here so the
-whole weight logic can be swept from one place (see project-plan.md, "Search the
-ranking weights instead of hand-picking them"). Setting every ``pb_*`` / ``w_*``
-entry to 0 reduces :func:`context_engine.profile.adaptive_weights` to the
+whole weight logic can be swept from one place during a grid search. Setting
+every ``pb_*`` / ``w_*`` entry to 0 reduces :func:`context_engine.profile.adaptive_weights` to the
 original intent-only rule table (the ``legacy_*`` deltas below) exactly — the
 pillar's safety net.
 

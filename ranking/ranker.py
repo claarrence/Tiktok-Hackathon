@@ -10,7 +10,8 @@ from retrieval.engine import tokenize
 # terms that are common *within this specific cluster of near-duplicates*
 # even when they're globally rare (e.g. "Imported" or "alloy" said once,
 # shared by every candidate in an already-filtered-down necklace/jacket
-# cluster) — see project-plan.md notes on Buying's rank-1 rate.
+# cluster) — see README.md, "Development History and Diagnosis," for the
+# Buying rank-1 rate investigation this came out of.
 TIE_BAND = 0.08
 TIE_CLUSTER_CAP = 20
 # Local document frequency over a cluster this small is noisy — one
@@ -135,7 +136,8 @@ def rank(
     both, instead of two slightly different ones over different field sets.
 
     Route fusion uses each route's raw normalized score directly rather than
-    Reciprocal Rank Fusion (RRF) -- RRF was tried (see project-plan.md) and,
+    Reciprocal Rank Fusion (RRF) -- RRF was tried (see README.md, "Development
+    History and Diagnosis") and,
     once its weights were properly tuned rather than reusing the raw-score
     weights, landed statistically tied with this simpler approach while
     losing MRR (especially on the Boundary scenario). Not worth the added

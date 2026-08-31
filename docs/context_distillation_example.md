@@ -95,5 +95,7 @@ intent-override Hit Rate 0.867 → 0.900, MRR 0.697 → 0.735.
 
 > Note: these numbers are only comparable because this change also removed a
 > pre-existing non-determinism (set-iteration order leaking into score ties) that
-> was swinging TechnicalScore by ~0.03 between `PYTHONHASHSEED` values. See the
-> "Determinism note" in `project-plan.md`.
+> was swinging TechnicalScore by ~0.03 between `PYTHONHASHSEED` values — candidate
+> sets are now sorted before being handed downstream so score ties resolve the
+> same way regardless of hash-seed ordering (see the sorting note in
+> `starter/agent.py`).
