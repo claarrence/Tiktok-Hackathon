@@ -68,6 +68,8 @@ class Agent:
             vector_scores,
             self.engine.products,
             self.engine.raw_text,
+            self.engine.idf,
+            self.engine.default_idf,
             state.slot_tokens(),
             state.preference_terms,
             state.disclosed_phrases,

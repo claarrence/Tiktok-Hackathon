@@ -1,6 +1,4 @@
-# Devpost Written Project Description — DRAFT
-
-Status: day-1 draft. Architecture section reflects the team's actual design; Tools/APIs/Libraries are placeholders until we decide during build. Update as we go rather than writing this fresh at the end.
+# Devpost Written Project Description
 
 ## How our solution addresses the problem statement
 
@@ -17,10 +15,10 @@ This design is scored directly against the challenge's own metrics: retrieval br
 
 | Metric         | Weak BM25 baseline | Our agent | Change       |
 | -------------- | ------------------ | --------- | ------------ |
-| Hit Rate@10    | 0.125              | 0.730     | +0.605       |
-| MRR            | 0.068              | 0.451     | +0.383       |
-| MTTC           | 9.81               | 5.29      | −4.52 turns |
-| TechnicalScore | 0.107              | 0.615     | ~5.8x        |
+| Hit Rate@10    | 0.125              | 0.950     | +0.825       |
+| MRR            | 0.068              | 0.641     | +0.573       |
+| MTTC           | 9.81               | 4.18      | −5.63 turns |
+| TechnicalScore | 0.107              | 0.804     | ~7.5x        |
 
 (These figures are now run-to-run stable: we removed a set-iteration-order dependency that was leaking `PYTHONHASHSEED` into score ties and swinging TechnicalScore by ~0.02 between runs of identical code.)
 
@@ -28,21 +26,28 @@ The single biggest lever turned out to be architectural rather than algorithmic:
 
 A follow-up diagnosis of the remaining misses found ~86% were ranking failures, not recall failures — the correct product was almost always somewhere in the retrieval candidate pool, just not pushed into the top 10. Two ranking fixes closed a chunk of that gap: (1) disclosed budget amounts are now compared numerically against the catalog's actual `price` field instead of being (uselessly) token-matched against product text, and (2) disclosed constraint phrases — which are lifted near-verbatim from the target product's own listing text — now get an exact-substring match bonus in the ranker, which is a much stronger disambiguation signal than bag-of-words overlap for telling near-duplicate products apart.
 
-The context-programming pillar targets the same ranking gap from a different angle. Rather than one static fusion of the retrieval routes, the distilled `ContextVector` drives a per-turn `precision_bias` that shifts weight toward exact slot/phrase matching in proportion to how much the shopper has actually disclosed — and detected intent-override turns give it an extra push, since the post-override constraint is the sharpest signal in the session. Isolated on the 200 dev sessions (against an otherwise identical agent with static weights), this lifts TechnicalScore 0.603 → 0.615, Hit Rate 0.715 → 0.730, and MRR 0.443 → 0.451, concentrated in the intent-override scenario (Hit Rate 0.867 → 0.900). A worked before/after walk-through is in `docs/context_distillation_example.md`. *(Update these tables again if further tuning changes the numbers before submission.)*
+The context-programming pillar targets the same ranking gap from a different angle. Rather than one static fusion of the retrieval routes, the distilled `ContextVector` drives a per-turn `precision_bias` that shifts weight toward exact slot/phrase matching in proportion to how much the shopper has actually disclosed — and detected intent-override turns give it an extra push, since the post-override constraint is the sharpest signal in the session. Isolated on the 200 dev sessions (against an otherwise identical agent with static weights), this lifts TechnicalScore 0.603 → 0.615, Hit Rate 0.715 → 0.730, and MRR 0.443 → 0.451, concentrated in the intent-override scenario (Hit Rate 0.867 → 0.900). A worked before/after walk-through is in `docs/context_distillation_example.md`.
+
+**Correction:** an earlier version of this draft attributed a "0.615 → 0.790, single largest jump in the project" swing to replacing the vector route's scoring function (Jaccard → TF-IDF cosine). That number was confounded — it compared against a stale 0.615 baseline that predated a separate, larger round of dialog-strategy fixes (shallow-disclosure follow-ups, question-budget exhaustion handling, slot override/broaden-reset behavior) landing in parallel on the same branch. Measured properly in isolation, holding the (already-improved) dialog-strategy code fixed and changing only the vector route: **TechnicalScore 0.7875 → 0.7899, a small, real gain (+0.003), not a dramatic one.** The dialog-strategy fixes are the actual largest single contributor to the project's score — roughly 0.615 → 0.7875 across those commits, though that comparison isn't as cleanly isolated as the vector-route A/B since other small changes landed in the same span.
+
+TF-IDF is still worth keeping over Jaccard: it down-weights generic catalog-wide words ("clothing," "comfortable") relative to the specific, rare details that actually separate near-duplicate products, which is the theoretically correct behavior even where the 200-session dev set doesn't show a large effect from it. (Reciprocal Rank Fusion for the same route-combination step was also tried and measured — see `project-plan.md` — and reverted after tuning landed it at a tie with the simpler raw-score approach while costing MRR.)
+
+A real, generalizable bug surfaced from tracing an actual failing session rather than guessing: `category_route`'s old top-200 cutoff could silently drop legitimately-matching products off the candidate list whenever more than 200 products tied for the best category-overlap score — common for broad categories (482 products fully matched "Card Cases & Money Organizers Wallets" in one session), since the tie-break fell out of arbitrary insertion order rather than any meaningful signal. The target in that session landed at alphabetical position 395 among the ties and was excluded entirely, scoring `category=0.0` despite a perfect category match, while an unrelated product at position 20 got full credit purely by luck. Fixed by guaranteeing every candidate tied for the best score is kept regardless of count, and only truncating the lower, partial-match tiers — this generalizes to any category width without a new heuristic or magic constant. This lifted TechnicalScore 0.7899 → 0.8020 (Hit Rate 0.940 → 0.950, MRR 0.628 → 0.635). Notably, it mostly helped hit rate and MRR broadly rather than fixing rank-1 precision on the specific scenario that motivated the investigation (Buying, still ~43% rank-1 among its hits).
+
+That Buying gap turned out to have two distinct causes, found by tracing 44 actual near-miss transcripts rather than tuning weights blind. First: the fused ranking score was landing in genuine near-ties (median gap 0.038 out of ~1.0) between the target and a near-duplicate catalog item sharing the same disclosed constraint — two alloy necklaces, two "Imported, 100% Polyester" rain jackets — because catalog-wide IDF doesn't capture that a term is common *within that specific pair*, even when it's globally rare. We added a bounded second ranking pass: candidates within a small margin of the leading score get their disclosed phrases re-weighted by document frequency computed only within that tie cluster, nudged by no more than half that margin so it can settle a genuine tie but never overturn a lead earned elsewhere. That closed part of the gap safely (0 regressions across all 200 sessions, MRR 0.635 → 0.641) but left Buying's rank-1 rate itself unmoved (33/77 either way) — which pointed at the second, deeper cause: the challenge's own scoring rule locks in a session's rank at the *first* turn the target enters the top 10, and roughly a third of Buying sessions do that on turn 1, before any clarifying question is even asked, off a single generic disclosed word ("polyester," "alloy") that's shared by every near-duplicate in the catalog. No amount of ranking-side re-weighting can recover information that was never disclosed — that subset is a dialog-policy question (what to ask first), not a ranking one, and we're treating it as an open, explicitly-scoped-out item rather than a late risky change (see `project-plan.md`).
 
 ## Development tools used
 
-- Python 3.10+ *(confirm team's actual version/IDE — e.g. VSCode, PyCharm, Jupyter)*
+- Python 3.10+ (no external dependencies — runs from a fresh clone with the standard `python3` interpreter, no notebook or IDE-specific tooling required)
 - Git / GitHub for version control
-- *(add: any notebook/experiment tooling, if used)*
 
 ## APIs used
 
-- **None, currently.** The "LLM Semantic Ranking" stage is implemented as a local, fully-offline scoring function (BM25 + category-overlap + Jaccard token-similarity + slot-match + profile-tag boost) rather than a hosted LLM call — this is explicitly allowed ("local scoring logic for the LLM ranking stage" is in-scope per the brief) and means the agent has zero network dependency and zero per-call cost. *Open decision for the team: swap the top-N reranking step for a real LLM API call (state which one here) if it beats the local scorer on the dev set — worth an A/B before committing, since it adds cost/latency/network-dependency.*
+- **None.** The "LLM Semantic Ranking" stage is implemented as a local, fully-offline scoring function (BM25-style keyword route + category-overlap + TF-IDF cosine similarity + IDF-weighted slot/phrase matching + profile-tag boost), which the challenge brief explicitly allows in place of a hosted LLM call. We deliberately did not swap this for a hosted LLM API: the local scorer already reaches TechnicalScore 0.804 on the dev set, adding an API call would introduce cost, latency, and a network dependency the organizer may disable for official scoring (per `docs/submission_rules.md`'s Model Policy), and there wasn't safe time this close to the deadline to A/B a swap without risking a regression we couldn't fully re-verify.
 
 ## Libraries and frameworks used
 
-- **Python standard library only**: `sqlite3` (in-memory FTS5 full-text index for the keyword retrieval route), `re`, `json`, `dataclasses`. No external dependencies, no `requirements.txt` needed yet — deliberate, since it keeps setup to a single `python3` command and satisfies the "in-memory, no heavy vector DB" constraint for free. *Update this if a teammate adds something (e.g. an embeddings library) for a specific pillar.*
+- **Python standard library only**: `sqlite3` (in-memory FTS5 full-text index for the keyword retrieval route), `re`, `json`, `dataclasses`, `math`, `statistics`. No external dependencies and no `requirements.txt` — deliberate, since it keeps setup to a single `python3` command and satisfies the "in-memory, no heavy vector DB" constraint for free.
 
 ## Datasets and assets used
 
@@ -51,6 +56,24 @@ The context-programming pillar targets the same ranking gap from a different ang
 - 800 private evaluation sessions held by the organizer for final scoring (not accessible to us).
 - No manually labeled data of our own.
 
----
+## Method, model choice & limitations
 
-*Reminder: also need — a short method/limitations report, and a latency/token-usage/cost disclosure, per `docs/submission_rules.md`. Those can reuse content from this draft.*
+**Method:** four pipeline stages, wired together per turn in `starter/agent.py`. (1) Intent routing classifies each turn Buying vs. Browsing. (2) Multi-route retrieval (keyword FTS5, category inverted-index, TF-IDF cosine vector) unions candidates from all three routes into one pool. (3) A context-distillation stage folds the session so far (disclosed constraints, override events, buyer profile) into weights that re-orchestrate the next two stages. (4) A local ranking function fuses the three retrieval routes with slot-match, phrase-match, price, and rating signals into a final score, including a bounded second pass that re-resolves near-ties using rarity computed within just the leading cluster of candidates rather than the whole catalog. A dialog-state machine decides, each turn, whether to ask a clarifying question (and which one) or return recommendations, based on candidate-pool size, score confidence margin, and a per-question budget.
+
+**Model choice:** no hosted LLM — see "APIs used" above. Ranking is a deterministic, fully-local scoring function rather than a learned or prompted model, chosen for zero cost, zero network dependency, and full reproducibility from a frozen catalog.
+
+**Limitations / what we'd improve with more time:**
+- **Buying scenario rank-1 precision (~43%)** is the clearest remaining gap — see the diagnosis above. About a third of Buying sessions resolve on turn 1 off a single generic disclosed word, before the dialog policy gets a chance to ask a more discriminating question; fixing this needs a deliberate dialog-policy change (which question to front-load, at what cost to MTTC), not another ranking tweak.
+- **No real LLM reranking stage.** The brief allows a local scorer in place of one, and ours is competitive, but a prompted reranker over the top ~20–30 candidates was the original Pillar IV design and was deprioritized once the local scorer's marginal returns made the added latency/cost/network-dependency risk hard to justify this close to the deadline (see `project-plan.md`, "Remaining candidate, not yet implemented").
+- **Boundary scenario has the smallest sample (10/200 sessions)** in the public dev set, so its MRR (0.53) is the noisiest of the four scenario breakdowns — a single session flips it several points. Worth more dev examples before trusting it as a tuning target.
+- **Reciprocal Rank Fusion was tried and reverted** (see `project-plan.md`) after tuning landed it at a statistical tie with the simpler raw-score route fusion while costing Boundary-scenario MRR — noted here so it isn't re-attempted from scratch without that context.
+
+## Latency, token usage & cost disclosure
+
+- **Model cost: $0.** No hosted API is called; there is no per-token or per-request cost, and none of the code paths require network access at inference time (see "APIs used").
+- **Token usage: 0 prompt / 0 completion tokens** per turn, reported honestly via the `usage` field in every `respond()` call (see `starter/agent.py`) — there's no LLM call to meter.
+- **Latency**, measured locally on the 200-session public dev set (`evaluator/local_evaluator.py`, single-threaded, no GPU):
+  - One-time catalog load + index build (SQLite FTS5 + TF-IDF over 50,000 products): **~3.6s**, paid once per process start, not per session or per turn.
+  - Average `respond()` call: **~38ms** (826 total turns across 200 sessions, 31.1s wall time).
+  - Average full session (up to 10 turns, ends early on a hit): **~155ms**.
+- **Offline fallback:** the entire agent *is* the offline fallback — it has no online mode to fall back from. It runs unmodified under network restrictions, per the Model Policy in `docs/submission_rules.md`.
