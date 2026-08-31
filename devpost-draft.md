@@ -17,10 +17,10 @@ This design is scored directly against the challenge's own metrics: retrieval br
 
 | Metric         | Weak BM25 baseline | Our agent | Change       |
 | -------------- | ------------------ | --------- | ------------ |
-| Hit Rate@10    | 0.125              | 0.940     | +0.815       |
-| MRR            | 0.068              | 0.628     | +0.560       |
-| MTTC           | 9.81               | 4.43      | −5.38 turns |
-| TechnicalScore | 0.107              | 0.790     | ~7.4x        |
+| Hit Rate@10    | 0.125              | 0.950     | +0.825       |
+| MRR            | 0.068              | 0.635     | +0.567       |
+| MTTC           | 9.81               | 4.18      | −5.63 turns |
+| TechnicalScore | 0.107              | 0.802     | ~7.5x        |
 
 (These figures are now run-to-run stable: we removed a set-iteration-order dependency that was leaking `PYTHONHASHSEED` into score ties and swinging TechnicalScore by ~0.02 between runs of identical code.)
 
@@ -33,6 +33,8 @@ The context-programming pillar targets the same ranking gap from a different ang
 **Correction:** an earlier version of this draft attributed a "0.615 → 0.790, single largest jump in the project" swing to replacing the vector route's scoring function (Jaccard → TF-IDF cosine). That number was confounded — it compared against a stale 0.615 baseline that predated a separate, larger round of dialog-strategy fixes (shallow-disclosure follow-ups, question-budget exhaustion handling, slot override/broaden-reset behavior) landing in parallel on the same branch. Measured properly in isolation, holding the (already-improved) dialog-strategy code fixed and changing only the vector route: **TechnicalScore 0.7875 → 0.7899, a small, real gain (+0.003), not a dramatic one.** The dialog-strategy fixes are the actual largest single contributor to the project's score — roughly 0.615 → 0.7875 across those commits, though that comparison isn't as cleanly isolated as the vector-route A/B since other small changes landed in the same span.
 
 TF-IDF is still worth keeping over Jaccard: it down-weights generic catalog-wide words ("clothing," "comfortable") relative to the specific, rare details that actually separate near-duplicate products, which is the theoretically correct behavior even where the 200-session dev set doesn't show a large effect from it. (Reciprocal Rank Fusion for the same route-combination step was also tried and measured — see `project-plan.md` — and reverted after tuning landed it at a tie with the simpler raw-score approach while costing MRR.)
+
+A real, generalizable bug surfaced from tracing an actual failing session rather than guessing: `category_route`'s old top-200 cutoff could silently drop legitimately-matching products off the candidate list whenever more than 200 products tied for the best category-overlap score — common for broad categories (482 products fully matched "Card Cases & Money Organizers Wallets" in one session), since the tie-break fell out of arbitrary insertion order rather than any meaningful signal. The target in that session landed at alphabetical position 395 among the ties and was excluded entirely, scoring `category=0.0` despite a perfect category match, while an unrelated product at position 20 got full credit purely by luck. Fixed by guaranteeing every candidate tied for the best score is kept regardless of count, and only truncating the lower, partial-match tiers — this generalizes to any category width without a new heuristic or magic constant. This lifted TechnicalScore 0.7899 → 0.8020 (Hit Rate 0.940 → 0.950, MRR 0.628 → 0.635). Notably, it mostly helped hit rate and MRR broadly rather than fixing rank-1 precision on the specific scenario that motivated the investigation (Buying, still ~43% rank-1 among its hits) — that remains an open problem, not something this fix closed.
 
 ## Development tools used
 
