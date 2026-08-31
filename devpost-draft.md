@@ -17,10 +17,10 @@ This design is scored directly against the challenge's own metrics: retrieval br
 
 | Metric         | Weak BM25 baseline | Our agent | Change       |
 | -------------- | ------------------ | --------- | ------------ |
-| Hit Rate@10    | 0.125              | 0.730     | +0.605       |
-| MRR            | 0.068              | 0.451     | +0.383       |
-| MTTC           | 9.81               | 5.29      | −4.52 turns |
-| TechnicalScore | 0.107              | 0.615     | ~5.8x        |
+| Hit Rate@10    | 0.125              | 0.940     | +0.815       |
+| MRR            | 0.068              | 0.628     | +0.560       |
+| MTTC           | 9.81               | 4.43      | −5.38 turns |
+| TechnicalScore | 0.107              | 0.790     | ~7.4x        |
 
 (These figures are now run-to-run stable: we removed a set-iteration-order dependency that was leaking `PYTHONHASHSEED` into score ties and swinging TechnicalScore by ~0.02 between runs of identical code.)
 
@@ -28,7 +28,9 @@ The single biggest lever turned out to be architectural rather than algorithmic:
 
 A follow-up diagnosis of the remaining misses found ~86% were ranking failures, not recall failures — the correct product was almost always somewhere in the retrieval candidate pool, just not pushed into the top 10. Two ranking fixes closed a chunk of that gap: (1) disclosed budget amounts are now compared numerically against the catalog's actual `price` field instead of being (uselessly) token-matched against product text, and (2) disclosed constraint phrases — which are lifted near-verbatim from the target product's own listing text — now get an exact-substring match bonus in the ranker, which is a much stronger disambiguation signal than bag-of-words overlap for telling near-duplicate products apart.
 
-The context-programming pillar targets the same ranking gap from a different angle. Rather than one static fusion of the retrieval routes, the distilled `ContextVector` drives a per-turn `precision_bias` that shifts weight toward exact slot/phrase matching in proportion to how much the shopper has actually disclosed — and detected intent-override turns give it an extra push, since the post-override constraint is the sharpest signal in the session. Isolated on the 200 dev sessions (against an otherwise identical agent with static weights), this lifts TechnicalScore 0.603 → 0.615, Hit Rate 0.715 → 0.730, and MRR 0.443 → 0.451, concentrated in the intent-override scenario (Hit Rate 0.867 → 0.900). A worked before/after walk-through is in `docs/context_distillation_example.md`. *(Update these tables again if further tuning changes the numbers before submission.)*
+The context-programming pillar targets the same ranking gap from a different angle. Rather than one static fusion of the retrieval routes, the distilled `ContextVector` drives a per-turn `precision_bias` that shifts weight toward exact slot/phrase matching in proportion to how much the shopper has actually disclosed — and detected intent-override turns give it an extra push, since the post-override constraint is the sharpest signal in the session. Isolated on the 200 dev sessions (against an otherwise identical agent with static weights), this lifts TechnicalScore 0.603 → 0.615, Hit Rate 0.715 → 0.730, and MRR 0.443 → 0.451, concentrated in the intent-override scenario (Hit Rate 0.867 → 0.900). A worked before/after walk-through is in `docs/context_distillation_example.md`.
+
+The last big lever was replacing the vector-similarity route's scoring function. It originally used plain token-Jaccard overlap, which treats every shared word as equally meaningful — so a generic word like "comfortable" counted the same as a specific, rare detail that actually separates one product from ten near-duplicates in the same category. Swapping in TF-IDF cosine similarity (IDF computed once over the frozen catalog at index time, still pure Python stdlib — no embeddings dependency) let that route actually discriminate between similar products instead of just measuring rough topical overlap. Combined with the ranker's other precision signals (which were already tuned to reward exact matches), this was the single largest jump in the project: TechnicalScore 0.615 → 0.790, Hit Rate@10 0.730 → 0.940, MRR 0.451 → 0.628. *(Update these tables again if further tuning changes the numbers before submission.)*
 
 ## Development tools used
 
@@ -38,7 +40,7 @@ The context-programming pillar targets the same ranking gap from a different ang
 
 ## APIs used
 
-- **None, currently.** The "LLM Semantic Ranking" stage is implemented as a local, fully-offline scoring function (BM25 + category-overlap + Jaccard token-similarity + slot-match + profile-tag boost) rather than a hosted LLM call — this is explicitly allowed ("local scoring logic for the LLM ranking stage" is in-scope per the brief) and means the agent has zero network dependency and zero per-call cost. *Open decision for the team: swap the top-N reranking step for a real LLM API call (state which one here) if it beats the local scorer on the dev set — worth an A/B before committing, since it adds cost/latency/network-dependency.*
+- **None, currently.** The "LLM Semantic Ranking" stage is implemented as a local, fully-offline scoring function (BM25 + category-overlap + TF-IDF cosine similarity + slot-match + profile-tag boost) rather than a hosted LLM call — this is explicitly allowed ("local scoring logic for the LLM ranking stage" is in-scope per the brief) and means the agent has zero network dependency and zero per-call cost. *Open decision for the team: swap the top-N reranking step for a real LLM API call (state which one here) if it beats the local scorer on the dev set — worth an A/B before committing, since it adds cost/latency/network-dependency.*
 
 ## Libraries and frameworks used
 
