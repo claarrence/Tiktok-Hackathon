@@ -1,6 +1,26 @@
 from __future__ import annotations
 
+import math
+
 from retrieval.engine import tokenize
+
+# Second-pass disambiguation: candidates within this margin of the leading
+# score are treated as a tie cluster rather than a settled ranking. Global
+# IDF/phrase-match already fed into the first pass but doesn't distinguish
+# terms that are common *within this specific cluster of near-duplicates*
+# even when they're globally rare (e.g. "Imported" or "alloy" said once,
+# shared by every candidate in an already-filtered-down necklace/jacket
+# cluster) — see project-plan.md notes on Buying's rank-1 rate.
+TIE_BAND = 0.08
+TIE_CLUSTER_CAP = 20
+# Local document frequency over a cluster this small is noisy — one
+# incidental co-occurrence (e.g. a disclosed "color: green" contributing the
+# label word "color" itself, which happens to match an unrelated product's
+# "Color" details key) can swing a token's local weight sharply. Nudging the
+# original score by at most the tie band itself keeps that noise from ever
+# overturning a lead the first pass earned outside the band, while still
+# letting it settle ties genuinely inside it.
+LOCAL_BONUS_SCALE = TIE_BAND / 2
 
 
 def _rating_prior(product: dict) -> float:
@@ -29,6 +49,65 @@ def _phrase_score(raw_text: str, disclosed_phrases: list[str]) -> float:
         return 0.0
     hits = sum(1 for phrase in meaningful if phrase in raw_text)
     return hits / len(meaningful)
+
+
+def _disambiguate_ties(
+    scored: list[tuple[str, float]],
+    raw_text: dict[str, str],
+    disclosed_phrases: list[str],
+) -> list[tuple[str, float]]:
+    """Re-rank the leading tie cluster using phrase rarity computed within
+    that cluster, instead of catalog-wide. A phrase can be globally rare
+    (surviving the first pass's IDF weighting) and still be worthless for
+    telling two near-duplicate finalists apart if both of them contain it.
+
+    Deliberately phrase-substring only, not bag-of-words over single tokens:
+    a lone word like "color" or "green" shows up incidentally all over long
+    marketing/spec text for reasons that have nothing to do with the
+    disclosed constraint (a stray "Color:" details key, an unrelated "green
+    initiative" blurb), and with a cluster this small (single-digit to ~20
+    candidates) one coincidental hit is enough to swing its whole local
+    weight. A multi-word phrase match doesn't have that failure mode.
+    """
+    if len(scored) < 2:
+        return scored
+    top_score = scored[0][1]
+    cluster = [item for item in scored[: TIE_CLUSTER_CAP] if top_score - item[1] <= TIE_BAND]
+    if len(cluster) < 2:
+        return scored
+
+    meaningful_phrases = [phrase.strip().lower() for phrase in disclosed_phrases if len(phrase.strip()) >= 3]
+    if not meaningful_phrases:
+        return scored
+
+    cluster_ids = [asin for asin, _ in cluster]
+    n = len(cluster_ids)
+
+    def local_idf(document_frequency: int) -> float:
+        # No +1 floor: a phrase every candidate in the cluster shares (the
+        # common case for catalog boilerplate like "Imported" once you're
+        # down to near-duplicates) must weight to ~0, not a flat minimum —
+        # that's the whole point of scoring rarity *within the cluster*.
+        return math.log((n + 1) / (document_frequency + 1))
+
+    phrase_weight = {
+        phrase: local_idf(sum(1 for asin in cluster_ids if phrase in raw_text.get(asin, "")))
+        for phrase in meaningful_phrases
+    }
+    phrase_weight_total = sum(phrase_weight.values())
+    if phrase_weight_total <= 0:
+        return scored
+
+    def local_bonus(asin: str) -> float:
+        text = raw_text.get(asin, "")
+        matched = sum(weight for phrase, weight in phrase_weight.items() if phrase in text)
+        return matched / phrase_weight_total
+
+    reordered = sorted(
+        cluster,
+        key=lambda item: (-(item[1] + LOCAL_BONUS_SCALE * local_bonus(item[0])), item[0]),
+    )
+    return reordered + scored[len(cluster):]
 
 
 def rank(
@@ -97,4 +176,4 @@ def rank(
         scored.append((asin, score))
 
     scored.sort(key=lambda item: (-item[1], item[0]))
-    return scored
+    return _disambiguate_ties(scored, raw_text, disclosed_phrases)
