@@ -237,12 +237,14 @@ class RetrievalIntegrationTest(unittest.TestCase):
         self.assertLess(len(self.engine.products), 100000)
 
     def test_doc_tokens_index_populated(self) -> None:
-        """Verify tokenization index exists."""
-        self.assertEqual(len(self.engine.doc_tokens), len(self.engine.products))
-        # All ASINs in products should have tokens
+        """Verify the TF-IDF document index exists (replaced the plain
+        doc_tokens set index when the vector route moved to TF-IDF cosine)."""
+        self.assertEqual(len(self.engine.doc_tfidf), len(self.engine.products))
+        # All ASINs in products should have a non-empty TF-IDF vector and norm
         for asin in list(self.engine.products.keys())[:10]:
-            self.assertIn(asin, self.engine.doc_tokens)
-            self.assertGreater(len(self.engine.doc_tokens[asin]), 0)
+            self.assertIn(asin, self.engine.doc_tfidf)
+            self.assertGreater(len(self.engine.doc_tfidf[asin]), 0)
+            self.assertGreater(self.engine.doc_norm[asin], 0.0)
 
     def test_category_inverted_index_built(self) -> None:
         """Verify category inverted index was constructed."""

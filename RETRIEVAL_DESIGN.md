@@ -67,7 +67,9 @@ The retrieval pillar enables **93.5% Hit Rate@10** on the public dev set by:
 - Only captures category terms, not all product text
 - Requires tokenization consistency (mitigated by shared `tokenize()` function)
 
-### Vector Route (Jaccard Similarity)
+### Vector Route (Jaccard Similarity → TF-IDF Cosine)
+
+> **Update:** the vector route was later changed from Jaccard to TF-IDF cosine similarity (`retrieval/engine.py`'s `vector_route`, IDF computed once over the whole catalog at index time). Reasoning: Jaccard weights every shared token equally, so a generic catalog-wide word ("clothing," "comfortable") counts the same as a rare, specific detail that actually separates one product from ten near-duplicates in the same category — TF-IDF down-weights the former and up-weights the latter, while staying dependency-free (still pure stdlib, no embedding model). Measured in isolation against the same dialog-strategy code (holding everything else constant): TechnicalScore 0.7875 → 0.7899 — a small but real gain, not a dramatic one; most of the project's larger score jumps came from the dialog-strategy and ranking-precision work elsewhere, not this route specifically. The Jaccard write-up below is kept as the original design rationale — the trade-off reasoning (no dependencies, in-memory, scoped-to-candidates) still applies to TF-IDF cosine too, just with a smarter per-token weight than raw overlap.
 
 **Approach:** Token-level Jaccard similarity scoped to a candidate pool, standing in for dense embeddings
 
