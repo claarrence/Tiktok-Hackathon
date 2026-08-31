@@ -14,13 +14,18 @@ from __future__ import annotations
 
 from context_engine.params import PARAMS
 
+# Re-tuned against the fully-merged pipeline (Pillars I–IV + dialog + IDF ranker)
+# by grid search on the 200 public dev sessions, optimising TechnicalScore.
+# vs. the original hand-picked vector: slot 0.15->0.20, phrase 0.17->0.22,
+# keyword 0.25->0.22 — lean harder on the exact-match routes now that the
+# dialog machine surfaces more constraints. (+0.006 TechnicalScore.)
 BASE_WEIGHTS = {
-    "keyword": 0.25,
+    "keyword": 0.22,
     "category": 0.15,
     "vector": 0.15,
-    "slot": 0.15,
+    "slot": 0.20,
     "tag": 0.05,
-    "phrase": 0.17,
+    "phrase": 0.22,
     "price": 0.08,
 }
 

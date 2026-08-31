@@ -19,7 +19,8 @@ from __future__ import annotations
 PARAMS: dict[str, float] = {
     # --- precision_bias: how strongly the disclosed information so far has
     #     earned a shift from recall routes toward precision routes (0..pb_max)
-    "pb_constraint": 0.16,        # per confirmed slot attribute
+    "pb_constraint": 0.20,        # per confirmed slot attribute (re-swept on the
+                                  # fully-merged pipeline: 0.16 -> 0.20, +2 hits)
     "pb_constraint_cap": 4.0,     # ...counted up to this many
     "pb_override": 0.12,          # per detected intent-override event
     "pb_phrase": 0.06,            # per disclosed constraint phrase

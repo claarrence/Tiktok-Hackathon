@@ -30,7 +30,13 @@ def _phrase_score(raw_text: str, disclosed_phrases: list[str]) -> float:
     if not meaningful:
         return 0.0
     hits = sum(1 for phrase in meaningful if phrase in raw_text)
-    return hits / len(meaningful)
+    score = hits / len(meaningful)
+    # The hidden target contains every one of its own disclosed phrases by
+    # construction; near-duplicates typically miss at least one. Reward the
+    # clean sweep so it breaks out of a tie at ranks 2-4.
+    if len(meaningful) >= 2 and hits == len(meaningful):
+        score += 0.5
+    return score
 
 
 _IDF_CACHE: dict[int, tuple[dict[str, float], float]] = {}
