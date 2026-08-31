@@ -136,13 +136,30 @@ class RetrievalEngine:
             return {}
         overlap: Counter[str] = Counter()
         for token in wanted:
-            for asin in sorted(self.category_inverted.get(token, ())):
+            for asin in self.category_inverted.get(token, ()):
                 overlap[asin] += 1
         if not overlap:
             return {}
-        top = overlap.most_common(limit)
         denom = len(wanted)
-        return {asin: count / denom for asin, count in top}
+        best_count = max(overlap.values())
+        # A broad, widely-shared category path (e.g. hundreds of products all
+        # under "Wallets") can produce far more than `limit` candidates tied
+        # for the best overlap score. A hard `most_common(limit)` slice would
+        # silently drop some of those ties based on arbitrary insertion
+        # order, which can exclude the true target while an unrelated
+        # tie-mate survives purely by luck. Every candidate tied for the best
+        # score is kept, however many there are; `limit` only bounds the
+        # lower, partial-match tiers where being cut is harmless.
+        best_tier = {asin: best_count / denom for asin, count in overlap.items() if count == best_count}
+        remaining = limit - len(best_tier)
+        if remaining <= 0:
+            return best_tier
+        lower_tier = sorted(
+            ((asin, count) for asin, count in overlap.items() if count != best_count),
+            key=lambda item: (-item[1], item[0]),
+        )[:remaining]
+        best_tier.update({asin: count / denom for asin, count in lower_tier})
+        return best_tier
 
     def vector_route(
         self, query_terms: list[str], candidate_ids: set[str], limit: int = 200
