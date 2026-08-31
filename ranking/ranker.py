@@ -54,6 +54,13 @@ def rank(
     ``idf``/``default_idf`` come from the same catalog-wide IDF the vector
     route uses (``RetrievalEngine.idf``) — one IDF computation shared across
     both, instead of two slightly different ones over different field sets.
+
+    Route fusion uses each route's raw normalized score directly rather than
+    Reciprocal Rank Fusion (RRF) -- RRF was tried (see project-plan.md) and,
+    once its weights were properly tuned rather than reusing the raw-score
+    weights, landed statistically tied with this simpler approach while
+    losing MRR (especially on the Boundary scenario). Not worth the added
+    RRF_K tuning surface for a tie.
     """
     hard_price_filter = intent == "buying" and budget_target is not None
     scored: list[tuple[str, float]] = []
